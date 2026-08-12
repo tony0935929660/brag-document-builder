@@ -1,3 +1,15 @@
+## [0.3.0] - 2026-08-12
+
+### Added
+- Added Slice 3 `analyze-inbox` command with optional inbox-file, vault override, model, and max-bytes options.
+- Added explicit outbound preview showing exact transmitted content and byte-size estimate before cloud analysis.
+- Added mandatory user confirmation gate before sending inbox content to OpenAI.
+- Added analysis result validation for required grouping, classification, scoring dimensions, and reason fields.
+- Added Slice 3 tests for preview behavior, confirmation rejection, size-limit blocking, missing key handling, API failure safety, malformed response handling, and secret non-leakage.
+
+### Changed
+- Extended CLI workflow to support safe inbox analysis without persisting prompt/response payloads to Markdown.
+
 ## [0.2.0] - 2026-08-12
 
 ### Added
