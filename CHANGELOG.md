@@ -1,3 +1,13 @@
+## [0.4.0] - 2026-08-12
+
+### Added
+- Added a new review-candidate command with quick and immediate review modes for candidate triage.
+- Added persistent review state tracking for candidate status, pending questions, confirmed answers, and suggested inferences.
+- Added Slice 4 test coverage for follow-up limits, defer behavior, readiness transition, and inference-confirmation separation.
+
+### Changed
+- Unified outbound cloud safety gate logic for preview, size checks, and explicit YES confirmation across analysis and follow-up requests.
+
 ## [0.3.0] - 2026-08-12
 
 ### Added
