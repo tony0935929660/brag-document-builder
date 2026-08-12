@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "brag-document-builder"
+version = "0.1.0"
+description = "Local-first CLI for Brag Document Builder"
+requires-python = ">=3.12"
+
+[tool.setuptools]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
