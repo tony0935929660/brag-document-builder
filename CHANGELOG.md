@@ -1,3 +1,12 @@
+## [0.6.0] - 2026-08-15
+
+### Added
+- Added an `attach-candidate` command with explicit `merge`, `separate`, and `ignore` decisions for reviewed candidates.
+- Added authoritative achievement scanning and parsing directly from Markdown files using immutable achievement IDs.
+- Added conflict presentation for incoming versus existing facts and sources, with explicit confirmation before any replacement.
+- Added malformed achievement-file reporting and skip behavior to prevent unsafe modifications.
+- Added Slice 6 tests covering rename/move identity lookup, merge/separate/ignore behavior, conflict confirmation, authority precedence, and generated-section-only regeneration.
+
 ## [0.5.0] - 2026-08-15
 
 ### Added

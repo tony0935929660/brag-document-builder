@@ -208,6 +208,212 @@ def render_rejection_markdown(candidate: dict, reason: str) -> str:
     )
 
 
+def parse_frontmatter(text: str) -> dict:
+    lines = text.splitlines()
+    data: dict = {}
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not line.strip():
+            i += 1
+            continue
+        if ":" not in line:
+            i += 1
+            continue
+        key, raw_value = line.split(":", 1)
+        key = key.strip()
+        raw_value = raw_value.strip()
+        if raw_value == "":
+            i += 1
+            values: list[str] = []
+            while i < len(lines) and lines[i].lstrip().startswith("- "):
+                item = lines[i].lstrip()[2:].strip()
+                try:
+                    values.append(json.loads(item))
+                except json.JSONDecodeError:
+                    values.append(item)
+                i += 1
+            data[key] = values
+            continue
+        try:
+            data[key] = json.loads(raw_value)
+        except json.JSONDecodeError:
+            data[key] = raw_value
+        i += 1
+    return data
+
+
+def render_frontmatter(data: dict) -> str:
+    ordered_keys = [
+        "id",
+        "state",
+        "date",
+        "project",
+        "source_references",
+        "ai_provider",
+        "ai_model",
+        "generated_at_utc",
+        "generated_language",
+    ]
+    keys = ordered_keys + [k for k in data.keys() if k not in ordered_keys]
+    out = ["---"]
+    for key in keys:
+        if key not in data:
+            continue
+        value = data[key]
+        if isinstance(value, list):
+            out.append(f"{key}:")
+            for item in value:
+                out.append(f"  - {markdown_string(str(item))}")
+            continue
+        if key in {"state", "ai_provider"}:
+            out.append(f"{key}: {value}")
+        else:
+            out.append(f"{key}: {markdown_string(str(value))}")
+    out.append("---")
+    return "\n".join(out)
+
+
+def parse_confirmed_facts_block(block_text: str) -> dict:
+    def get_value(title: str, next_title: str | None) -> str:
+        start_token = f"### {title}\n\n"
+        start = block_text.find(start_token)
+        if start == -1:
+            return ""
+        start += len(start_token)
+        if next_title is None:
+            end = len(block_text)
+        else:
+            end_token = f"\n\n### {next_title}\n\n"
+            end = block_text.find(end_token, start)
+            if end == -1:
+                end = len(block_text)
+        return block_text[start:end].strip()
+
+    return {
+        "context": get_value("Context", "Contribution"),
+        "contribution": get_value("Contribution", "Outcome"),
+        "outcome": get_value("Outcome", "Evidence"),
+        "evidence": get_value("Evidence", None),
+    }
+
+
+def render_confirmed_facts_block(facts: dict) -> str:
+    return (
+        "## Confirmed Facts\n\n"
+        f"### Context\n\n{facts.get('context', '')}\n\n"
+        f"### Contribution\n\n{facts.get('contribution', '')}\n\n"
+        f"### Outcome\n\n{facts.get('outcome', '')}\n\n"
+        f"### Evidence\n\n{facts.get('evidence', '')}"
+    )
+
+
+def parse_source_material_block(block_text: str) -> list[str]:
+    body = block_text.replace("## Source Material", "", 1).strip()
+    lines: list[str] = []
+    for line in body.splitlines():
+        trimmed = line.strip()
+        if trimmed.startswith("- "):
+            lines.append(trimmed[2:].strip())
+    return lines
+
+
+def parse_generated_wording_block(block_text: str) -> str:
+    return block_text.replace("## Generated Wording", "", 1).strip()
+
+
+def parse_authoritative_achievement_file(path: Path) -> dict:
+    content = path.read_text(encoding="utf-8")
+    validate_authoritative_achievement(content)
+    end_frontmatter = content.find("\n---\n", 4)
+    if end_frontmatter == -1:
+        raise ValueError("Malformed authoritative achievement Markdown: invalid frontmatter.")
+    frontmatter_text = content[4:end_frontmatter]
+    body = content[end_frontmatter + 5 :]
+    idx_cf = body.find("## Confirmed Facts")
+    idx_sm = body.find("## Source Material")
+    idx_gw = body.find("## Generated Wording")
+    if min(idx_cf, idx_sm, idx_gw) == -1 or not (idx_cf < idx_sm < idx_gw):
+        raise ValueError("Malformed authoritative achievement Markdown: invalid section order.")
+
+    confirmed_block = body[idx_cf:idx_sm].rstrip()
+    source_block = body[idx_sm:idx_gw].rstrip()
+    generated_block = body[idx_gw:].rstrip()
+    frontmatter = parse_frontmatter(frontmatter_text)
+    achievement_id = str(frontmatter.get("id", "")).strip()
+    if not achievement_id:
+        raise ValueError("Malformed authoritative achievement Markdown: missing id.")
+
+    source_refs = frontmatter.get("source_references", [])
+    if not isinstance(source_refs, list):
+        raise ValueError("Malformed authoritative achievement Markdown: source_references must be a list.")
+
+    return {
+        "path": path,
+        "content": content,
+        "frontmatter": frontmatter,
+        "id": achievement_id,
+        "project": str(frontmatter.get("project", "")),
+        "source_references": [str(x) for x in source_refs],
+        "confirmed_facts": parse_confirmed_facts_block(confirmed_block),
+        "confirmed_block": confirmed_block,
+        "source_lines": parse_source_material_block(source_block),
+        "generated_wording": parse_generated_wording_block(generated_block),
+    }
+
+
+def scan_achievements(vault_path: Path) -> tuple[dict, list[str]]:
+    achievement_root = vault_path / "Brag" / "Achievements"
+    entries: dict[str, dict] = {}
+    warnings: list[str] = []
+    for path in achievement_root.rglob("*.md"):
+        try:
+            parsed = parse_authoritative_achievement_file(path)
+        except ValueError as e:
+            warnings.append(f"Skipped malformed achievement file: {path} ({e})")
+            continue
+        entries[parsed["id"]] = parsed
+    return entries, warnings
+
+
+def choose_target_achievement(achievements: dict, candidate: dict, achievement_id: str | None) -> dict | None:
+    if achievement_id:
+        key = validate_achievement_id(achievement_id)
+        return achievements.get(key)
+    project = str(candidate.get("project_or_topic", "")).strip().lower()
+    matches = [a for a in achievements.values() if str(a.get("project", "")).strip().lower() == project]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def compose_authoritative_markdown(
+    *,
+    frontmatter: dict,
+    confirmed_block: str,
+    source_lines: list[str],
+    generated_wording: str,
+) -> str:
+    source_body = "\n".join(f"- {line}" for line in source_lines)
+    source_block = "## Source Material\n\n"
+    if source_body:
+        source_block += source_body + "\n"
+    generated_block = "## Generated Wording\n\n" + generated_wording.strip() + "\n"
+    return (
+        render_frontmatter(frontmatter)
+        + "\n\n"
+        + confirmed_block.strip()
+        + "\n\n"
+        + source_block
+        + "\n"
+        + generated_block
+    )
+
+
+def default_wording_from_facts(facts: dict) -> str:
+    return f"{facts.get('contribution', '')}; {facts.get('outcome', '')}".strip("; ")
+
+
 def resolve_vault_path(override_path: str | None) -> Path:
     if override_path:
         return ensure_existing_directory(override_path)
@@ -727,6 +933,126 @@ def cmd_confirm_candidate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_attach_candidate(args: argparse.Namespace) -> int:
+    vault_path = resolve_vault_path(args.vault)
+    state = load_review_state()
+    candidate = find_candidate_state(state, args.candidate_id)
+    incoming_facts = candidate.get("confirmed_answers", {})
+    if not isinstance(incoming_facts, dict):
+        raise ValueError("Candidate confirmed answers are invalid.")
+
+    achievements, warnings = scan_achievements(vault_path)
+    for warning in warnings:
+        print(warning)
+
+    target = choose_target_achievement(achievements, candidate, args.achievement_id)
+    action = args.action or input("Choose action (merge/separate/ignore): ").strip().lower()
+    if action not in {"merge", "separate", "ignore"}:
+        raise ValueError("Action must be one of: merge, separate, ignore.")
+
+    if action == "ignore":
+        candidate["status"] = "ignored"
+        candidate["ignored_at_utc"] = datetime.now(timezone.utc).isoformat()
+        save_review_state(state)
+        print("Candidate ignored and preserved for traceability.")
+        return 0
+
+    if action == "separate":
+        achievement_id = validate_achievement_id(args.new_achievement_id or str(uuid.uuid4()))
+        wording = args.wording or default_wording_from_facts(incoming_facts)
+        file_name = f"{safe_file_stem(candidate.get('project_or_topic', 'achievement'))}--{achievement_id}.md"
+        achievement_path = vault_path / "Brag" / "Achievements" / file_name
+        content = render_achievement_markdown(
+            achievement_id=achievement_id,
+            candidate=candidate,
+            wording=wording,
+            language=args.language,
+            model=args.model,
+        )
+        validate_authoritative_achievement(content)
+        if achievement_path.exists():
+            validate_authoritative_achievement(achievement_path.read_text(encoding="utf-8"))
+            raise ValueError(f"Achievement already exists and will not be overwritten: {achievement_path}")
+        write_text_atomic(achievement_path, content)
+        candidate["status"] = "confirmed"
+        candidate["achievement_id"] = achievement_id
+        candidate["achievement_path"] = str(achievement_path)
+        save_review_state(state)
+        print(f"Created separate achievement at: {achievement_path}")
+        return 0
+
+    if target is None:
+        raise ValueError(
+            "No target achievement selected. Provide --achievement-id for merge when auto-match is ambiguous."
+        )
+
+    print(f"Target achievement id: {target['id']}")
+    print(f"Target path: {target['path']}")
+    print(f"Existing source references: {json.dumps(target['source_references'], ensure_ascii=False)}")
+    print(f"Incoming source: {candidate['candidate_id']}")
+
+    existing_facts = dict(target["confirmed_facts"])
+    facts_changed = False
+    if not confirm_stage(f"Confirm merge into achievement '{target['id']}'."):
+        print("Merge cancelled.")
+        return 0
+
+    for key in READY_KEYS:
+        incoming = str(incoming_facts.get(key, "")).strip()
+        existing = str(existing_facts.get(key, "")).strip()
+        if not incoming or incoming == existing:
+            continue
+        print(f"Conflict on {key}:")
+        print(f"- existing ({target['id']}): {existing}")
+        print(f"- incoming ({candidate['candidate_id']}): {incoming}")
+        if existing:
+            if confirm_stage(f"Replace existing fact '{key}' with incoming value?"):
+                existing_facts[key] = incoming
+                facts_changed = True
+        else:
+            if confirm_stage(f"Adopt incoming fact '{key}' into empty field?"):
+                existing_facts[key] = incoming
+                facts_changed = True
+
+    frontmatter = dict(target["frontmatter"])
+    source_refs = list(target["source_references"])
+    source_lines = list(target["source_lines"])
+    incoming_source = candidate["candidate_id"]
+    if incoming_source not in source_refs:
+        if confirm_stage("Attach incoming source reference to the target achievement?"):
+            source_refs.append(incoming_source)
+    if incoming_source not in source_lines and incoming_source in source_refs:
+        source_lines.append(incoming_source)
+
+    confirmed_block = target["confirmed_block"]
+    if facts_changed:
+        confirmed_block = render_confirmed_facts_block(existing_facts)
+
+    generated_wording = target["generated_wording"]
+    if args.regenerate_generated:
+        generated_wording = args.wording or default_wording_from_facts(existing_facts)
+        frontmatter["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
+        frontmatter["generated_language"] = args.language
+        frontmatter["ai_model"] = args.model
+
+    frontmatter["source_references"] = source_refs
+    content = compose_authoritative_markdown(
+        frontmatter=frontmatter,
+        confirmed_block=confirmed_block,
+        source_lines=source_lines,
+        generated_wording=generated_wording,
+    )
+    validate_authoritative_achievement(content)
+    write_text_atomic(target["path"], content)
+
+    candidate["status"] = "confirmed"
+    candidate["attached_achievement_id"] = target["id"]
+    candidate["achievement_path"] = str(target["path"])
+    save_review_state(state)
+    print(f"Merged candidate into achievement: {target['path']}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="brag-cli")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -790,6 +1116,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     confirm_parser.add_argument("--model", default="gpt-4o-mini", help="Generation model metadata")
     confirm_parser.set_defaults(handler=cmd_confirm_candidate)
+
+    attach_parser = subparsers.add_parser(
+        "attach-candidate", help="Attach a reviewed candidate to an existing achievement"
+    )
+    attach_parser.add_argument("--candidate-id", required=True, help="Candidate ID from review state")
+    attach_parser.add_argument("--vault", help="Optional vault path override")
+    attach_parser.add_argument("--achievement-id", help="Target achievement immutable ID for merge")
+    attach_parser.add_argument(
+        "--action", choices=["merge", "separate", "ignore"], help="Attachment decision"
+    )
+    attach_parser.add_argument("--new-achievement-id", help="Immutable ID when action=separate")
+    attach_parser.add_argument("--wording", help="Generated wording to store or regenerate")
+    attach_parser.add_argument(
+        "--language", choices=["zh-TW", "en"], default="zh-TW", help="Generated wording language"
+    )
+    attach_parser.add_argument("--model", default="gpt-4o-mini", help="Generation model metadata")
+    attach_parser.add_argument(
+        "--regenerate-generated",
+        action="store_true",
+        help="Regenerate only the generated wording section during merge",
+    )
+    attach_parser.set_defaults(handler=cmd_attach_candidate)
 
     return parser
 
