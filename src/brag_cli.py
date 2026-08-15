@@ -1088,6 +1088,60 @@ def estimate_bytes(content: str) -> int:
 
 
 def request_openai_analysis(api_key: str, model: str, outbound_content: str) -> dict:
+    def send_chat(payload: dict) -> str:
+        body = json.dumps(payload).encode("utf-8")
+        req = urlrequest.Request(
+            OPENAI_API_URL,
+            data=body,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urlrequest.urlopen(req, timeout=30) as resp:
+                raw = resp.read().decode("utf-8")
+        except urlerror.URLError as e:
+            raise OSError("OpenAI request failed") from e
+
+        parsed = json.loads(raw)
+        try:
+            return parsed["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as e:
+            raise ValueError("OpenAI response format is invalid.") from e
+
+    def parse_json_content(model_content: str) -> dict:
+        try:
+            obj = json.loads(model_content)
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
+
+        fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", model_content, re.IGNORECASE)
+        if fence_match:
+            fenced = fence_match.group(1).strip()
+            try:
+                obj = json.loads(fenced)
+                if isinstance(obj, dict):
+                    return obj
+            except json.JSONDecodeError:
+                pass
+
+        start = model_content.find("{")
+        end = model_content.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            candidate = model_content[start : end + 1]
+            try:
+                obj = json.loads(candidate)
+                if isinstance(obj, dict):
+                    return obj
+            except json.JSONDecodeError:
+                pass
+
+        raise ValueError("OpenAI returned non-JSON analysis content.")
+
     prompt = (
         "Analyze the inbox content and return JSON only. "
         "Top-level keys: groups (array). "
@@ -1102,34 +1156,77 @@ def request_openai_analysis(api_key: str, model: str, outbound_content: str) -> 
             {"role": "system", "content": prompt},
             {"role": "user", "content": outbound_content},
         ],
+        "response_format": {"type": "json_object"},
         "temperature": 0.1,
     }
-    body = json.dumps(payload).encode("utf-8")
-    req = urlrequest.Request(
-        OPENAI_API_URL,
-        data=body,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urlrequest.urlopen(req, timeout=30) as resp:
-            raw = resp.read().decode("utf-8")
-    except urlerror.URLError as e:
-        raise OSError("OpenAI request failed") from e
 
-    parsed = json.loads(raw)
+    model_content = send_chat(payload)
     try:
-        model_content = parsed["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as e:
-        raise ValueError("OpenAI response format is invalid.") from e
+        return normalize_analysis_result(parse_json_content(model_content))
+    except ValueError:
+        retry_payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        prompt
+                        + " Return ONLY a valid JSON object and no markdown, no prose, no code fences."
+                    ),
+                },
+                {"role": "user", "content": outbound_content},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.0,
+        }
+        retry_content = send_chat(retry_payload)
+        return normalize_analysis_result(parse_json_content(retry_content))
 
-    try:
-        return json.loads(model_content)
-    except json.JSONDecodeError as e:
-        raise ValueError("OpenAI returned non-JSON analysis content.") from e
+
+def normalize_reason_value(value) -> str:
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def normalize_analysis_result(result: dict) -> dict:
+    if not isinstance(result, dict):
+        return result
+    groups = result.get("groups")
+    if not isinstance(groups, list):
+        return result
+
+    normalized_groups = []
+    for group in groups:
+        if not isinstance(group, dict):
+            normalized_groups.append(group)
+            continue
+
+        items = group.get("items")
+        if not isinstance(items, list):
+            normalized_groups.append(group)
+            continue
+
+        normalized_items = []
+        for item in items:
+            if not isinstance(item, dict):
+                normalized_items.append(item)
+                continue
+            normalized_item = dict(item)
+            normalized_item["reason"] = normalize_reason_value(normalized_item.get("reason", ""))
+            normalized_items.append(normalized_item)
+
+        normalized_group = dict(group)
+        normalized_group["items"] = normalized_items
+        normalized_groups.append(normalized_group)
+
+    normalized_result = dict(result)
+    normalized_result["groups"] = normalized_groups
+    return normalized_result
 
 
 def request_openai_followup_suggestions(api_key: str, model: str, review_summary: str) -> dict:

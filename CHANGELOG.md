@@ -1,3 +1,17 @@
+## [1.0.0] - 2026-08-15
+
+### Added
+- Added a local Flask web workspace with a three-column capture and analysis interface.
+- Added structured capture defaults with context/action/impact/evidence guidance and built-in presets.
+- Added a Docker .env-based startup workflow with a PowerShell wrapper for one-command usage.
+
+### Changed
+- Added Flask as a project dependency for the local web interface.
+
+### Fixed
+- Fixed web capture button inactivity caused by front-end script issues and improved UI error reporting.
+- Improved analysis robustness by enforcing JSON responses, extracting fenced JSON, retrying strict JSON prompts, and normalizing non-string reason fields.
+
 ## [0.10.0] - 2026-08-15
 
 ### Added

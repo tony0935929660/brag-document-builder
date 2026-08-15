@@ -7,6 +7,9 @@ name = "brag-document-builder"
 version = "0.1.0"
 description = "Local-first CLI for Brag Document Builder"
 requires-python = ">=3.12"
+dependencies = [
+	"Flask>=3.0,<4",
+]
 
 [tool.setuptools]
 

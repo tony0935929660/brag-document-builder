@@ -1,0 +1,19 @@
+services:
+  brag-cli:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: brag-document-builder:local
+    working_dir: /workspace
+    env_file:
+      - .env
+    volumes:
+      - ./:/workspace
+      - type: bind
+        source: ${VAULT_PATH}
+        target: /vault
+    environment:
+      - BRAG_CONFIG_DIR=/workspace/.brag-config
+    tty: true
+    stdin_open: true
+    entrypoint: ["python", "-m", "src.brag_cli"]
