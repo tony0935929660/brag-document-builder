@@ -1,3 +1,10 @@
+## [1.0.2] - 2026-08-15
+
+### Changed
+- Defined achievement metadata fields and Title-Kebab-Case tag normalization rules.
+- Defined multi-Changelog repository registration, source traceability, and automatic project propagation requirements.
+- Expanded the v1.3 and v1.4 acceptance criteria and test scope for metadata and Changelog workflows.
+
 ## [1.0.1] - 2026-08-15
 
 ### Added

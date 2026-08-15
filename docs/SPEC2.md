@@ -261,6 +261,26 @@ Merge 前必須顯示：
 
 Web 不提供永久刪除。使用者仍可直接在 Obsidian 編輯 Markdown。
 
+### 12.1 Metadata 與標籤
+
+Achievement frontmatter 支援以下可查詢 metadata：
+
+- `project`：所屬專案。
+- `skills`：使用的技術或能力。
+- `themes`：成果主題，例如 `Reliability`、`Efficiency`。
+- `competencies`：展現的職能，例如 `Ownership`、`Cross-Team-Collaboration`。
+- `impact_scope`：影響範圍，例如 `Customer`、`Engineering-Team`。
+- `tags`：其他通用搜尋標籤，例如 `AI-Agent`。
+
+標籤值採 `Title-Kebab-Case`：
+
+- 單字以大寫開頭。
+- 多字以連字號分隔，例如 `Performance-Optimization`。
+- 縮寫維持全大寫，例如 `AI-Agent`、`API-Design`。
+- Web 在寫入前執行正規化並避免大小寫或空白造成的重複值。
+
+Web 使用可搜尋的多選控制項管理 metadata。AI 可以建議 project、skills、themes、competencies、impact scope 與 tags，但建議值必須由使用者確認後才能寫入權威 Achievement Markdown。
+
 ## 13. Outputs
 
 支援：
@@ -291,11 +311,21 @@ Web 不提供永久刪除。使用者仍可直接在 Obsidian 編輯 Markdown。
 
 Web 支援：
 
-- Register、list、remove。
+- 同一個 Repository 註冊一個或多個 Changelog 路徑。
+- Register、list、remove Repository 與個別 Changelog 來源。
 - 選取 Changelog heading/range。
 - 預覽精確匯入文字。
 - 明確確認後寫入 Inbox。
 - 選擇是否接續 Analyze。
+
+Repository 的所屬專案名稱永遠取自 Repo 資料夾名稱。相同 Repo 內的多個 Changelog 都歸於同一 project，但每個來源另外保存：
+
+- Changelog 檔名。
+- 完整路徑。
+- Source label。
+- 選取範圍與 content hash。
+
+Changelog 匯入時自動將 Repo project 加入 Capture 與後續 Candidate。建立 Achievement 時預設沿用該 project；使用者可在確認階段修改，但 AI 或匯入流程不能靜默覆蓋已確認的 project。
 
 ### 14.3 增量處理
 

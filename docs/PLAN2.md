@@ -184,10 +184,20 @@ flowchart LR
 #### Achievements 瀏覽
 
 - 掃描 Markdown 並以 immutable ID 建立列表。
-- 搜尋、狀態、project、skill 篩選。
+- 搜尋、狀態、project、skills、themes、competencies、impact scope 與 tags 篩選。
 - 顯示 confirmed facts、sources、generated sections。
 - 顯示 missing evidence 與 strongest supported statement。
 - 封存，不提供永久刪除。
+
+#### Metadata 與標籤
+
+- Achievement frontmatter 支援 project、skills、themes、competencies、impact scope 與 tags。
+- 所有 metadata 值在寫入前正規化為 `Title-Kebab-Case`。
+- 縮寫保留全大寫，例如 `AI-Agent`、`API-Design`。
+- Web 提供可搜尋的多選控制項與既有值建議。
+- AI 建議值與使用者已確認值分開顯示。
+- 只有使用者確認的 metadata 可寫入權威 Markdown。
+- 避免大小寫、空白與連字號差異形成重複標籤。
 
 #### Generate Outputs
 
@@ -214,6 +224,9 @@ flowchart LR
 - 聚合文件包含所有選定 achievement IDs。
 - 寫入成功後 Web 顯示內容與實際路徑。
 - 封存後仍可搜尋與查看，但預設不進入一般輸出選擇。
+- 可依 project、skills、themes、competencies、impact scope 與 tags 查詢成果。
+- 新增與編輯的 metadata 使用 `Title-Kebab-Case`，例如 `AI-Agent`。
+- AI 建議 metadata 未經確認時不會寫入 Achievement。
 
 ### 6.4 測試
 
@@ -221,6 +234,8 @@ flowchart LR
 - 三種輸出、雙語、placeholder 測試。
 - Aggregate output 測試。
 - Regeneration confirmed facts 不變測試。
+- Metadata 正規化、縮寫、去重與多選查詢測試。
+- AI metadata 建議與使用者確認分離測試。
 - Browser E2E：選成果 → 生成 → 查看輸出。
 
 ## 7. v1.4：Repository 與 Changelog
@@ -240,10 +255,12 @@ flowchart LR
 
 #### 註冊管理
 
-- Register repo + changelog。
-- List 與 remove。
+- Register repo + 一個或多個 changelog 路徑。
+- List 與 remove Repository 或個別 Changelog 來源。
 - 顯示可存取性與最後匯入時間。
 - 阻止重複或越界路徑。
+- Project 永遠取 Repo 資料夾名稱。
+- 每個 Changelog 保存 file name、full path 與 source label。
 
 #### Changelog 匯入
 
@@ -252,6 +269,9 @@ flowchart LR
 - 明確 IMPORT 確認。
 - 先寫 Inbox，再可選 Analyze。
 - 任意 Markdown 格式仍保留原文。
+- 匯入時自動將 Repo project 寫入 Capture metadata。
+- Candidate 預設繼承來源 project。
+- Achievement 確認時預設沿用 project，但允許使用者明確修改。
 
 #### 增量與 Ledger
 
@@ -271,11 +291,17 @@ flowchart LR
 - Unchanged re-import 不產生重複 Inbox 或 API call。
 - Changed source 不自動修改 confirmed facts。
 - Ledger rebuild 不破壞 Markdown。
+- 同一 Repo 可管理多個 Changelog，且都歸屬 Repo 資料夾名稱所代表的 project。
+- 多 Changelog 來源仍可由檔名、路徑、source label 與 hash 獨立追溯。
+- 匯入的 project 自動傳遞至 Capture 與 Candidate。
+- 已確認 Achievement 的 project 不會被重新匯入靜默覆蓋。
 
 ### 7.4 測試
 
 - 多 root、路徑 traversal、Docker 映射測試。
 - Register/list/remove API 與 UI 測試。
+- 單 Repo 多 Changelog 註冊、移除與來源追溯測試。
+- Repo 資料夾名稱轉 project 與自動傳遞測試。
 - Heading range 與任意 Markdown 測試。
 - Import preview 取消與 offline 測試。
 - Hash skip、diff、affected achievements 測試。
