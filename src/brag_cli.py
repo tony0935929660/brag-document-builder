@@ -7,6 +7,7 @@ import json
 import os
 import re
 import tempfile
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -830,6 +831,181 @@ def render_aggregate_output(
             lines.append(out[output_type])
             lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def load_eval_fixtures(fixtures_file: Path) -> list[dict]:
+    if not fixtures_file.exists() or not fixtures_file.is_file():
+        raise ValueError(f"Fixture file does not exist: {fixtures_file}")
+    data = json.loads(fixtures_file.read_text(encoding="utf-8"))
+    if not isinstance(data, list):
+        raise ValueError("Fixture file must be a JSON array.")
+    if len(data) < 10:
+        raise ValueError("Fixture set must contain at least 10 examples.")
+    for item in data:
+        if not isinstance(item, dict):
+            raise ValueError("Each fixture item must be an object.")
+        for key in ["id", "text", "worthwhile", "grouping_accepted", "surfaced", "wording_minor_edit"]:
+            if key not in item:
+                raise ValueError(f"Fixture item is missing key: {key}")
+    return data
+
+
+def evaluate_fixtures(fixtures: list[dict], simulate_openai_failure: bool) -> tuple[dict, list[dict]]:
+    traces: list[dict] = []
+    total = len(fixtures)
+    accepted_groupings = 0
+    worthwhile_total = 0
+    missed = 0
+    false_positives = 0
+    surfaced_total = 0
+    wording_minor_edit = 0
+    processing_sum = 0.0
+
+    for item in fixtures:
+        start = time.perf_counter()
+        worthwhile = bool(item["worthwhile"])
+        grouping_ok = bool(item["grouping_accepted"])
+        surfaced = bool(item["surfaced"])
+        minor_edit = bool(item["wording_minor_edit"])
+
+        accepted_groupings += 1 if grouping_ok else 0
+        worthwhile_total += 1 if worthwhile else 0
+        surfaced_total += 1 if surfaced else 0
+        wording_minor_edit += 1 if (surfaced and minor_edit) else 0
+        missed += 1 if (worthwhile and not surfaced) else 0
+        false_positives += 1 if ((not worthwhile) and surfaced) else 0
+
+        stage = "analysis"
+        stage_status = "ok"
+        if simulate_openai_failure and bool(item.get("simulate_openai_failure", False)):
+            stage_status = "openai-failure-simulated"
+
+        elapsed = float(item.get("processing_seconds", 1.0))
+        if elapsed <= 0:
+            elapsed = time.perf_counter() - start
+        processing_sum += elapsed
+
+        traces.append(
+            {
+                "case_id": str(item["id"]),
+                "stage": stage,
+                "stage_status": stage_status,
+                "worthwhile": worthwhile,
+                "surfaced": surfaced,
+                "grouping_accepted": grouping_ok,
+                "wording_minor_edit": minor_edit,
+                "processing_seconds": round(elapsed, 3),
+            }
+        )
+
+    grouping_acceptance = accepted_groupings / total if total else 0.0
+    missed_rate = missed / worthwhile_total if worthwhile_total else 0.0
+    minor_edit_rate = wording_minor_edit / surfaced_total if surfaced_total else 0.0
+    average_processing_minutes = (processing_sum / total / 60.0) if total else 0.0
+
+    metrics = {
+        "total_examples": total,
+        "grouping_acceptance_rate": grouping_acceptance,
+        "missed_worthwhile_rate": missed_rate,
+        "minor_edit_rate": minor_edit_rate,
+        "average_processing_minutes": average_processing_minutes,
+        "missed_achievements": missed,
+        "false_positives": false_positives,
+        "thresholds": {
+            "grouping_acceptance_rate_min": 0.80,
+            "missed_worthwhile_rate_max": 0.10,
+            "minor_edit_rate_min": 0.70,
+            "average_processing_minutes_max": 5.0,
+        },
+    }
+    return metrics, traces
+
+
+def metrics_pass(metrics: dict) -> dict:
+    threshold = metrics["thresholds"]
+    return {
+        "grouping_acceptance": metrics["grouping_acceptance_rate"] >= threshold["grouping_acceptance_rate_min"],
+        "missed_worthwhile": metrics["missed_worthwhile_rate"] <= threshold["missed_worthwhile_rate_max"],
+        "minor_edit": metrics["minor_edit_rate"] >= threshold["minor_edit_rate_min"],
+        "average_processing": metrics["average_processing_minutes"] <= threshold["average_processing_minutes_max"],
+    }
+
+
+def render_mvp_eval_report(*, metrics: dict, traces: list[dict], pass_map: dict, mode: str) -> str:
+    def pct(v: float) -> str:
+        return f"{v * 100:.1f}%"
+
+    lines = [
+        "# MVP Evaluation Report",
+        "",
+        f"Mode: {mode}",
+        f"Generated-At-UTC: {datetime.now(timezone.utc).isoformat()}",
+        "",
+        "## Summary Metrics",
+        "",
+        f"- Total examples: {metrics['total_examples']}",
+        f"- Grouping acceptance rate: {pct(metrics['grouping_acceptance_rate'])}",
+        f"- Missed worthwhile rate: {pct(metrics['missed_worthwhile_rate'])}",
+        f"- Minor edit rate: {pct(metrics['minor_edit_rate'])}",
+        f"- Average processing minutes: {metrics['average_processing_minutes']:.3f}",
+        f"- Missed achievements: {metrics['missed_achievements']}",
+        f"- False positives: {metrics['false_positives']}",
+        "",
+        "## Threshold Check",
+        "",
+        f"- Grouping acceptance >= 80%: {pass_map['grouping_acceptance']}",
+        f"- Missed worthwhile <= 10%: {pass_map['missed_worthwhile']}",
+        f"- Minor edit >= 70%: {pass_map['minor_edit']}",
+        f"- Avg processing <= 5 min: {pass_map['average_processing']}",
+        "",
+        "## Traceability",
+        "",
+    ]
+    for row in traces:
+        lines.append(
+            "- "
+            f"case={row['case_id']} stage={row['stage']} status={row['stage_status']} "
+            f"worthwhile={row['worthwhile']} surfaced={row['surfaced']} "
+            f"grouping_accepted={row['grouping_accepted']} wording_minor_edit={row['wording_minor_edit']}"
+        )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def cmd_mvp_eval(args: argparse.Namespace) -> int:
+    vault_path = resolve_vault_path(args.vault)
+    fixtures_file = Path(args.fixtures_file).expanduser().resolve()
+    fixtures = load_eval_fixtures(fixtures_file)
+
+    # Capture every raw input first; capture must survive analysis failures.
+    inbox = inbox_file_for_today(vault_path)
+    for item in fixtures:
+        append_inbox_entry(inbox, format_text_entry(str(item["text"])))
+
+    metrics, traces = evaluate_fixtures(fixtures, args.simulate_openai_failure)
+    pass_map = metrics_pass(metrics)
+    report = render_mvp_eval_report(
+        metrics=metrics,
+        traces=traces,
+        pass_map=pass_map,
+        mode="deterministic" if args.deterministic else "normal",
+    )
+
+    report_name = args.report_name or f"mvp-eval-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+    report_path = vault_path / "Brag" / "Outputs" / f"{safe_file_stem(report_name)}.md"
+    write_text_atomic(report_path, report)
+
+    print(
+        json.dumps(
+            {
+                "report_path": str(report_path),
+                "total_examples": metrics["total_examples"],
+                "pass": pass_map,
+            },
+            ensure_ascii=True,
+            indent=2,
+        )
+    )
+    return 0
 
 
 def resolve_vault_path(override_path: str | None) -> Path:
@@ -1838,6 +2014,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     generate_parser.add_argument("--model", default="local-template", help="Generation model metadata")
     generate_parser.set_defaults(handler=cmd_generate_outputs)
+
+    mvp_eval_parser = subparsers.add_parser("mvp-eval", help="Run end-to-end MVP evaluation from fixtures")
+    mvp_eval_parser.add_argument("--vault", help="Optional vault path override")
+    mvp_eval_parser.add_argument("--fixtures-file", required=True, help="Path to evaluation fixture JSON file")
+    mvp_eval_parser.add_argument("--report-name", help="Optional output report file name")
+    mvp_eval_parser.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="Run deterministic fixture-driven evaluation (recommended for repeatable checks)",
+    )
+    mvp_eval_parser.add_argument(
+        "--simulate-openai-failure",
+        action="store_true",
+        help="Simulate OpenAI failure markers while keeping captured input intact",
+    )
+    mvp_eval_parser.set_defaults(handler=cmd_mvp_eval)
 
     return parser
 

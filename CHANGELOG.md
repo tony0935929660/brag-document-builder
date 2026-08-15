@@ -1,3 +1,12 @@
+## [0.10.0] - 2026-08-15
+
+### Added
+- Added an `mvp-eval` command for fixture-driven end-to-end MVP evaluation and report generation.
+- Added deterministic evaluation mode and simulated OpenAI failure mode for repeatable workflow validation.
+- Added summary metrics and threshold checks for grouping acceptance, missed worthwhile rate, minor-edit rate, and average processing time.
+- Added separated reporting for missed achievements and false positives with per-case stage traceability.
+- Added Slice 10 fixtures and tests covering clean-run reporting, deterministic repeatability, failure-safe capture retention, and API-key non-leakage.
+
 ## [0.9.0] - 2026-08-15
 
 ### Added

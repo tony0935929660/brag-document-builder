@@ -1,0 +1,102 @@
+[
+  {
+    "id": "case-01-fragmented-note",
+    "text": "Fixed flaky deployment script and documented rollback.",
+    "worthwhile": true,
+    "grouping_accepted": true,
+    "surfaced": true,
+    "wording_minor_edit": true,
+    "processing_seconds": 60,
+    "simulate_openai_failure": false
+  },
+  {
+    "id": "case-02-changelog-summary",
+    "text": "Release 1.2.0: reduced incident MTTR by improving triage runbook.",
+    "worthwhile": true,
+    "grouping_accepted": true,
+    "surfaced": true,
+    "wording_minor_edit": true,
+    "processing_seconds": 90,
+    "simulate_openai_failure": false
+  },
+  {
+    "id": "case-03-clear-achievement",
+    "text": "Automated regression suite and cut verification time by 35%.",
+    "worthwhile": true,
+    "grouping_accepted": true,
+    "surfaced": true,
+    "wording_minor_edit": true,
+    "processing_seconds": 120,
+    "simulate_openai_failure": false
+  },
+  {
+    "id": "case-04-routine-accumulation",
+    "text": "Handled weekly incident review and kept action items tracked.",
+    "worthwhile": true,
+    "grouping_accepted": true,
+    "surfaced": true,
+    "wording_minor_edit": false,
+    "processing_seconds": 120,
+    "simulate_openai_failure": false
+  },
+  {
+    "id": "case-05-duplicate-record",
+    "text": "Repeated summary of deployment automation already captured.",
+    "worthwhile": false,
+    "grouping_accepted": true,
+    "surfaced": false,
+    "wording_minor_edit": false,
+    "processing_seconds": 75,
+    "simulate_openai_failure": false
+  },
+  {
+    "id": "case-06-conflicting-record",
+    "text": "Claimed 80% improvement but evidence says only 20%.",
+    "worthwhile": false,
+    "grouping_accepted": true,
+    "surfaced": true,
+    "wording_minor_edit": false,
+    "processing_seconds": 90,
+    "simulate_openai_failure": false
+  },
+  {
+    "id": "case-07-capture-during-failure",
+    "text": "Captured note while OpenAI is unavailable.",
+    "worthwhile": true,
+    "grouping_accepted": true,
+    "surfaced": true,
+    "wording_minor_edit": true,
+    "processing_seconds": 80,
+    "simulate_openai_failure": true
+  },
+  {
+    "id": "case-08-security-hardening",
+    "text": "Added secret rotation checks and improved audit readiness.",
+    "worthwhile": true,
+    "grouping_accepted": true,
+    "surfaced": true,
+    "wording_minor_edit": true,
+    "processing_seconds": 100,
+    "simulate_openai_failure": false
+  },
+  {
+    "id": "case-09-collaboration-outcome",
+    "text": "Coordinated cross-team release freeze and prevented outage.",
+    "worthwhile": true,
+    "grouping_accepted": false,
+    "surfaced": true,
+    "wording_minor_edit": true,
+    "processing_seconds": 110,
+    "simulate_openai_failure": false
+  },
+  {
+    "id": "case-10-learning-item",
+    "text": "Learned new observability tooling and applied it to alerts.",
+    "worthwhile": true,
+    "grouping_accepted": true,
+    "surfaced": false,
+    "wording_minor_edit": false,
+    "processing_seconds": 95,
+    "simulate_openai_failure": false
+  }
+]
