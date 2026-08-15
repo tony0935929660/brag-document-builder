@@ -1,3 +1,9 @@
+## [1.0.1] - 2026-08-15
+
+### Added
+- Added the confirmed product specification for the complete local web workspace.
+- Added the v1.1 through v1.5 delivery plan with acceptance criteria, testing scope, and risk controls.
+
 ## [1.0.0] - 2026-08-15
 
 ### Added
