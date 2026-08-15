@@ -414,6 +414,219 @@ def default_wording_from_facts(facts: dict) -> str:
     return f"{facts.get('contribution', '')}; {facts.get('outcome', '')}".strip("; ")
 
 
+def has_explicit_metric(text: str) -> bool:
+    return re.search(r"\d+(?:\.\d+)?\s*%?", text) is not None
+
+
+def extract_resume_themes(facts: dict) -> list[str]:
+    haystack = " ".join(
+        [
+            str(facts.get("context", "")).lower(),
+            str(facts.get("contribution", "")).lower(),
+            str(facts.get("outcome", "")).lower(),
+            str(facts.get("evidence", "")).lower(),
+        ]
+    )
+    themes: list[str] = []
+    if any(k in haystack for k in ["led", "lead", "mentor", "帶領", "協作", "coordina"]):
+        themes.append("leadership")
+    if any(k in haystack for k in ["pipeline", "automation", "deploy", "ci/cd", "自動化"]):
+        themes.append("delivery-excellence")
+    if any(k in haystack for k in ["security", "reliability", "stability", "品質", "可靠"]):
+        themes.append("reliability-security")
+    if any(k in haystack for k in ["cost", "efficiency", "time", "效能", "效率", "%"]):
+        themes.append("impact-efficiency")
+    if not themes:
+        themes.append("execution")
+    return themes
+
+
+def strongest_statement(facts: dict, language: str) -> str:
+    contribution = str(facts.get("contribution", "")).strip()
+    outcome = str(facts.get("outcome", "")).strip()
+    if not outcome:
+        outcome = "[X%]" if language == "en" else "[X%]"
+    if language == "en":
+        return f"{contribution}; delivered {outcome}".strip("; ")
+    return f"{contribution}；帶來成果：{outcome}".strip("；")
+
+
+def generate_outputs_from_facts(facts: dict, language: str) -> dict:
+    context = str(facts.get("context", "")).strip()
+    contribution = str(facts.get("contribution", "")).strip()
+    outcome = str(facts.get("outcome", "")).strip()
+    evidence = str(facts.get("evidence", "")).strip()
+    if not has_explicit_metric(outcome):
+        outcome = (outcome + " " if outcome else "") + "[X%]"
+
+    if language == "en":
+        star = (
+            f"Situation: {context}\n"
+            f"Task: Improve the target outcome.\n"
+            f"Action: {contribution}\n"
+            f"Result: {outcome}; evidence: {evidence}"
+        )
+        resume = f"{contribution}, resulting in {outcome}."
+        summary = f"Delivered {outcome} by {contribution}. Evidence: {evidence}."
+    else:
+        star = (
+            f"Situation: {context}\n"
+            "Task: 改善目標結果。\n"
+            f"Action: {contribution}\n"
+            f"Result: {outcome}；證據：{evidence}"
+        )
+        resume = f"{contribution}，帶來 {outcome}。"
+        summary = f"透過 {contribution} 達成 {outcome}；證據：{evidence}。"
+
+    return {
+        "star": star,
+        "resume-bullet": resume,
+        "performance-summary": summary,
+    }
+
+
+def parse_output_types(value: str) -> list[str]:
+    allowed = {"star", "resume-bullet", "performance-summary"}
+    selected = [x.strip() for x in value.split(",") if x.strip()]
+    if not selected:
+        raise ValueError("At least one output type is required.")
+    for item in selected:
+        if item not in allowed:
+            raise ValueError(f"Unsupported output type: {item}")
+    return selected
+
+
+def render_generated_section(existing: str, language: str, model: str, outputs: dict, output_types: list[str]) -> str:
+    generated_at = datetime.now(timezone.utc).isoformat()
+    lines = [
+        "## Generated Wording",
+        "",
+        f"Generated-Language: {language}",
+        f"Generated-At-UTC: {generated_at}",
+        f"Generated-Model: {model}",
+        "",
+    ]
+    labels = {
+        "star": "STAR",
+        "resume-bullet": "Resume Bullet",
+        "performance-summary": "Performance Summary",
+    }
+    for output_type in output_types:
+        lines.append(f"### {labels[output_type]}")
+        lines.append("")
+        lines.append(outputs[output_type])
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def split_authoritative_sections(content: str) -> tuple[str, str, str, str]:
+    end_frontmatter = content.find("\n---\n", 4)
+    if end_frontmatter == -1:
+        raise ValueError("Malformed authoritative achievement Markdown: invalid frontmatter.")
+    frontmatter_text = content[4:end_frontmatter]
+    body = content[end_frontmatter + 5 :]
+    idx_cf = body.find("## Confirmed Facts")
+    idx_sm = body.find("## Source Material")
+    idx_gw = body.find("## Generated Wording")
+    if min(idx_cf, idx_sm, idx_gw) == -1 or not (idx_cf < idx_sm < idx_gw):
+        raise ValueError("Malformed authoritative achievement Markdown: invalid section order.")
+    confirmed_block = body[idx_cf:idx_sm].rstrip()
+    source_block = body[idx_sm:idx_gw].rstrip()
+    generated_block = body[idx_gw:].rstrip()
+    return frontmatter_text, confirmed_block, source_block, generated_block
+
+
+def compose_full_markdown(frontmatter: dict, confirmed_block: str, source_block: str, generated_block: str) -> str:
+    return (
+        render_frontmatter(frontmatter)
+        + "\n\n"
+        + confirmed_block.strip()
+        + "\n\n"
+        + source_block.strip()
+        + "\n\n"
+        + generated_block.strip()
+        + "\n"
+    )
+
+
+def update_generated_wording_section(
+    achievement: dict,
+    *,
+    language: str,
+    model: str,
+    output_types: list[str],
+) -> tuple[str, dict]:
+    outputs = generate_outputs_from_facts(achievement["confirmed_facts"], language)
+    frontmatter_text, confirmed_block, source_block, _ = split_authoritative_sections(achievement["content"])
+    frontmatter = parse_frontmatter(frontmatter_text)
+    frontmatter["generated_language"] = language
+    frontmatter["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
+    frontmatter["ai_model"] = model
+    if "ai_provider" not in frontmatter:
+        frontmatter["ai_provider"] = "local-template"
+    generated_block = render_generated_section(
+        achievement["generated_wording"],
+        language,
+        model,
+        outputs,
+        output_types,
+    )
+    new_content = compose_full_markdown(frontmatter, confirmed_block, source_block, generated_block)
+    validate_authoritative_achievement(new_content)
+    return new_content, outputs
+
+
+def build_feedback(achievement: dict, language: str) -> dict:
+    facts = achievement["confirmed_facts"]
+    themes = extract_resume_themes(facts)
+    missing = []
+    if not has_explicit_metric(str(facts.get("outcome", ""))):
+        missing.append("metric")
+    if not str(facts.get("evidence", "")).strip():
+        missing.append("evidence")
+    return {
+        "themes": themes,
+        "missing": missing,
+        "strongest_statement": strongest_statement(facts, language),
+    }
+
+
+def render_aggregate_output(
+    *,
+    achievements: list[dict],
+    generated: list[dict],
+    language: str,
+    output_types: list[str],
+) -> str:
+    lines = [
+        "# Aggregated Career Outputs",
+        "",
+        f"Language: {language}",
+        f"Generated-At-UTC: {datetime.now(timezone.utc).isoformat()}",
+        "",
+        "## Source Achievement IDs",
+        "",
+    ]
+    for ach in achievements:
+        lines.append(f"- {ach['id']}")
+    lines.append("")
+    labels = {
+        "star": "STAR",
+        "resume-bullet": "Resume Bullet",
+        "performance-summary": "Performance Summary",
+    }
+    for idx, ach in enumerate(achievements):
+        lines.append(f"## Achievement {ach['id']}")
+        lines.append("")
+        out = generated[idx]
+        for output_type in output_types:
+            lines.append(f"### {labels[output_type]}")
+            lines.append("")
+            lines.append(out[output_type])
+            lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def resolve_vault_path(override_path: str | None) -> Path:
     if override_path:
         return ensure_existing_directory(override_path)
@@ -1053,6 +1266,69 @@ def cmd_attach_candidate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_generate_outputs(args: argparse.Namespace) -> int:
+    vault_path = resolve_vault_path(args.vault)
+    achievements, warnings = scan_achievements(vault_path)
+    for warning in warnings:
+        print(warning)
+
+    ids = args.achievement_id
+    if not ids:
+        raise ValueError("At least one --achievement-id is required.")
+    output_types = parse_output_types(args.output_types)
+
+    selected: list[dict] = []
+    for achievement_id in ids:
+        key = validate_achievement_id(achievement_id)
+        achievement = achievements.get(key)
+        if achievement is None:
+            raise ValueError(f"Achievement not found: {key}")
+        state = str(achievement["frontmatter"].get("state", "")).strip().lower()
+        if state != "confirmed":
+            raise ValueError(f"Achievement is not confirmed: {key}")
+        selected.append(achievement)
+
+    generated_outputs: list[dict] = []
+    for achievement in selected:
+        feedback = build_feedback(achievement, args.language)
+        print(
+            json.dumps(
+                {
+                    "achievement_id": achievement["id"],
+                    "resume_themes": feedback["themes"],
+                    "missing_evidence": feedback["missing"],
+                    "strongest_statement": feedback["strongest_statement"],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+
+        new_content, outputs = update_generated_wording_section(
+            achievement,
+            language=args.language,
+            model=args.model,
+            output_types=output_types,
+        )
+        write_text_atomic(achievement["path"], new_content)
+        generated_outputs.append(outputs)
+        print(f"Updated generated wording for: {achievement['path']}")
+
+    if len(selected) > 1 or args.aggregate_name:
+        aggregate_name = args.aggregate_name or f"aggregate-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+        aggregate_path = vault_path / "Brag" / "Outputs" / f"{safe_file_stem(aggregate_name)}.md"
+        aggregate_text = render_aggregate_output(
+            achievements=selected,
+            generated=generated_outputs,
+            language=args.language,
+            output_types=output_types,
+        )
+        write_text_atomic(aggregate_path, aggregate_text)
+        print(f"Aggregate output created at: {aggregate_path}")
+
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="brag-cli")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1138,6 +1414,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Regenerate only the generated wording section during merge",
     )
     attach_parser.set_defaults(handler=cmd_attach_candidate)
+
+    generate_parser = subparsers.add_parser(
+        "generate-outputs", help="Generate immediate feedback and career outputs"
+    )
+    generate_parser.add_argument(
+        "--achievement-id",
+        action="append",
+        required=True,
+        help="Confirmed achievement ID (repeatable)",
+    )
+    generate_parser.add_argument("--vault", help="Optional vault path override")
+    generate_parser.add_argument(
+        "--output-types",
+        default="star,resume-bullet,performance-summary",
+        help="Comma-separated output types",
+    )
+    generate_parser.add_argument("--aggregate-name", help="Optional aggregate output file name")
+    generate_parser.add_argument(
+        "--language", choices=["zh-TW", "en"], default="zh-TW", help="Output language"
+    )
+    generate_parser.add_argument("--model", default="local-template", help="Generation model metadata")
+    generate_parser.set_defaults(handler=cmd_generate_outputs)
 
     return parser
 

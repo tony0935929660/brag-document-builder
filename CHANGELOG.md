@@ -1,3 +1,12 @@
+## [0.7.0] - 2026-08-15
+
+### Added
+- Added a `generate-outputs` command to create STAR stories, resume bullets, and performance summaries from confirmed achievements.
+- Added immediate feedback output with resume themes, missing evidence/metric indicators, and strongest supported statement.
+- Added aggregate output generation in `Brag/Outputs/` for multiple confirmed achievements with source achievement IDs.
+- Added strict confirmed-only generation checks and placeholder handling (`[X%]`) for missing metrics.
+- Added Slice 7 tests for multilingual generation, aggregate output creation, unconfirmed rejection, metric placeholders, and regeneration boundaries.
+
 ## [0.6.0] - 2026-08-15
 
 ### Added
