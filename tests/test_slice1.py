@@ -83,8 +83,12 @@ class Slice1Tests(unittest.TestCase):
         self.assertEqual(code, 0)
 
         config = json.loads(brag_cli.config_file_path().read_text(encoding="utf-8"))
-        self.assertEqual(set(config.keys()), {"default_vault_path", "updated_at_utc"})
+        self.assertEqual(
+            set(config.keys()),
+            {"default_vault_path", "repositories", "updated_at_utc"},
+        )
         self.assertEqual(config["default_vault_path"], str(vault.resolve()))
+        self.assertEqual(config["repositories"], [])
 
     def test_show_config_reports_default_vault(self) -> None:
         vault = Path(self.temp_dir.name) / "vault"

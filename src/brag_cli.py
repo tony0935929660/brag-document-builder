@@ -85,6 +85,88 @@ def load_config(config_path: Path) -> dict:
         return json.load(f)
 
 
+def load_operational_config() -> dict:
+    config = load_config(config_file_path())
+    repositories = config.get("repositories")
+    if repositories is None:
+        config["repositories"] = []
+    elif not isinstance(repositories, list):
+        raise ValueError("Invalid config: repositories must be a list.")
+    return config
+
+
+def save_operational_config(config: dict) -> None:
+    config["updated_at_utc"] = datetime.now(timezone.utc).isoformat()
+    write_config_atomic(config_file_path(), config)
+
+
+def resolve_registered_changelog(config: dict, repo_path_text: str) -> dict:
+    repo_path = ensure_existing_directory(repo_path_text)
+    for entry in config.get("repositories", []):
+        if Path(entry.get("repo_path", "")).resolve() == repo_path:
+            return entry
+    raise ValueError(f"Repository is not registered: {repo_path}")
+
+
+def normalize_repo_changelog_entry(repo_path_text: str, changelog_path_text: str) -> dict:
+    repo_path = ensure_existing_directory(repo_path_text)
+    changelog_path = Path(changelog_path_text).expanduser().resolve()
+    if not changelog_path.exists():
+        raise ValueError(f"Changelog path does not exist: {changelog_path}")
+    if not changelog_path.is_file():
+        raise ValueError(f"Changelog path is not a file: {changelog_path}")
+    return {
+        "repo_path": str(repo_path),
+        "changelog_path": str(changelog_path),
+        "registered_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def find_heading_line(lines: list[str], heading_text: str) -> int:
+    target = heading_text.strip().lower()
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith("#"):
+            continue
+        body = stripped.lstrip("#").strip().lower()
+        if body == target:
+            return idx
+    return -1
+
+
+def extract_changelog_heading_range(content: str, from_heading: str, to_heading: str | None) -> str:
+    lines = content.splitlines(keepends=True)
+    start = find_heading_line(lines, from_heading)
+    if start == -1:
+        raise ValueError(f"from-heading not found: {from_heading}")
+
+    end = len(lines)
+    if to_heading:
+        found = find_heading_line(lines, to_heading)
+        if found == -1:
+            raise ValueError(f"to-heading not found: {to_heading}")
+        if found <= start:
+            raise ValueError("to-heading must appear after from-heading.")
+        end = found
+
+    selected = "".join(lines[start:end]).rstrip("\n")
+    if not selected.strip():
+        raise ValueError("Selected changelog range is empty.")
+    return selected
+
+
+def format_changelog_import_entry(*, repo_path: str, changelog_path: str, range_label: str, source_text: str) -> str:
+    ts = datetime.now(timezone.utc).isoformat()
+    return (
+        f"## Changelog Import {ts}\n\n"
+        f"- repo_path: {repo_path}\n"
+        f"- changelog_path: {changelog_path}\n"
+        f"- selected_range: {range_label}\n\n"
+        "### Imported Source\n\n"
+        f"{source_text}\n"
+    )
+
+
 def review_state_file_path() -> Path:
     config_root = os.getenv("BRAG_CONFIG_DIR")
     if config_root:
@@ -896,6 +978,7 @@ def cmd_init_vault(args: argparse.Namespace) -> int:
 
     config = {
         "default_vault_path": str(vault_path),
+        "repositories": [],
         "updated_at_utc": datetime.now(timezone.utc).isoformat(),
     }
     write_config_atomic(config_file_path(), config)
@@ -906,8 +989,105 @@ def cmd_init_vault(args: argparse.Namespace) -> int:
 
 
 def cmd_show_config(_: argparse.Namespace) -> int:
-    config = load_config(config_file_path())
+    config = load_operational_config()
     print(json.dumps(config, ensure_ascii=True, indent=2))
+    return 0
+
+
+def cmd_repo_register(args: argparse.Namespace) -> int:
+    config = load_operational_config()
+    new_entry = normalize_repo_changelog_entry(args.repo_path, args.changelog_path)
+
+    repos = config.setdefault("repositories", [])
+    replaced = False
+    for idx, entry in enumerate(repos):
+        if Path(entry.get("repo_path", "")).resolve() == Path(new_entry["repo_path"]).resolve():
+            repos[idx] = new_entry
+            replaced = True
+            break
+    if not replaced:
+        repos.append(new_entry)
+
+    save_operational_config(config)
+    action = "Updated" if replaced else "Registered"
+    print(f"{action} repository: {new_entry['repo_path']}")
+    return 0
+
+
+def cmd_repo_list(_: argparse.Namespace) -> int:
+    config = load_operational_config()
+    print(json.dumps(config.get("repositories", []), ensure_ascii=True, indent=2))
+    return 0
+
+
+def cmd_repo_remove(args: argparse.Namespace) -> int:
+    config = load_operational_config()
+    repo_path = ensure_existing_directory(args.repo_path)
+    repos = config.get("repositories", [])
+    kept = [e for e in repos if Path(e.get("repo_path", "")).resolve() != repo_path]
+    if len(kept) == len(repos):
+        raise ValueError(f"Repository is not registered: {repo_path}")
+    config["repositories"] = kept
+    save_operational_config(config)
+    print(f"Removed repository: {repo_path}")
+    return 0
+
+
+def cmd_changelog_import(args: argparse.Namespace) -> int:
+    config = load_operational_config()
+    vault_path = resolve_vault_path(args.vault)
+    entry = resolve_registered_changelog(config, args.repo_path)
+    changelog_path = Path(entry["changelog_path"]).resolve()
+    raw = changelog_path.read_text(encoding="utf-8")
+    selected = extract_changelog_heading_range(raw, args.from_heading, args.to_heading)
+    range_label = args.from_heading if not args.to_heading else f"{args.from_heading} -> {args.to_heading}"
+
+    print("Changelog selection preview (exact imported text):")
+    print("-----BEGIN IMPORTED CONTENT-----")
+    print(selected)
+    print("-----END IMPORTED CONTENT-----")
+    answer = input("Type IMPORT to append this selection into Inbox: ").strip()
+    if answer != "IMPORT":
+        print("Import cancelled. No content was written.")
+        return 0
+
+    inbox = inbox_file_for_today(vault_path)
+    import_entry = format_changelog_import_entry(
+        repo_path=entry["repo_path"],
+        changelog_path=str(changelog_path),
+        range_label=range_label,
+        source_text=selected,
+    )
+    append_inbox_entry(inbox, import_entry)
+    print(f"Imported changelog selection to: {inbox}")
+
+    if args.analyze:
+        try:
+            result = confirm_and_send_cloud_request(
+                outbound_content=selected,
+                max_bytes=args.max_bytes,
+                request_callable=request_openai_analysis,
+                model=args.model,
+                label="Outbound content preview (exact payload):",
+            )
+            if result is not None:
+                validate_analysis_result(result)
+                print(
+                    json.dumps(
+                        {
+                            "provider": "openai",
+                            "model": args.model,
+                            "analyzed_at_utc": datetime.now(timezone.utc).isoformat(),
+                            "analysis": result,
+                        },
+                        ensure_ascii=True,
+                        indent=2,
+                    )
+                )
+            else:
+                print("Analysis cancelled. Imported source remains in Inbox.")
+        except (ValueError, OSError) as e:
+            print(f"Analysis skipped after import: {e}")
     return 0
 
 
@@ -1339,6 +1519,34 @@ def build_parser() -> argparse.ArgumentParser:
 
     show_parser = subparsers.add_parser("show-config", help="Show current local CLI configuration")
     show_parser.set_defaults(handler=cmd_show_config)
+
+    repo_register_parser = subparsers.add_parser(
+        "repo-register", help="Register a local repository and changelog path"
+    )
+    repo_register_parser.add_argument("--repo-path", required=True, help="Local repository path")
+    repo_register_parser.add_argument("--changelog-path", required=True, help="Local changelog file path")
+    repo_register_parser.set_defaults(handler=cmd_repo_register)
+
+    repo_list_parser = subparsers.add_parser("repo-list", help="List registered repositories")
+    repo_list_parser.set_defaults(handler=cmd_repo_list)
+
+    repo_remove_parser = subparsers.add_parser("repo-remove", help="Remove a registered repository")
+    repo_remove_parser.add_argument("--repo-path", required=True, help="Registered repository path")
+    repo_remove_parser.set_defaults(handler=cmd_repo_remove)
+
+    changelog_import_parser = subparsers.add_parser(
+        "changelog-import", help="Import a selected changelog range into inbox"
+    )
+    changelog_import_parser.add_argument("--repo-path", required=True, help="Registered repository path")
+    changelog_import_parser.add_argument("--from-heading", required=True, help="Start heading text")
+    changelog_import_parser.add_argument("--to-heading", help="End heading text (exclusive)")
+    changelog_import_parser.add_argument("--vault", help="Optional vault path override")
+    changelog_import_parser.add_argument(
+        "--analyze", action="store_true", help="Optionally analyze selected text after import"
+    )
+    changelog_import_parser.add_argument("--max-bytes", type=int, default=12000, help="Max outbound bytes")
+    changelog_import_parser.add_argument("--model", default="gpt-4o-mini", help="OpenAI model name")
+    changelog_import_parser.set_defaults(handler=cmd_changelog_import)
 
     capture_text_parser = subparsers.add_parser("capture-text", help="Capture free-form work notes")
     capture_text_parser.add_argument("--text", required=True, help="Text to capture as raw activity")

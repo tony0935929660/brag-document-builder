@@ -1,3 +1,15 @@
+## [0.8.0] - 2026-08-15
+
+### Added
+- Added repository registration commands (`repo-register`, `repo-list`, `repo-remove`) for explicit local repo/changelog management.
+- Added `changelog-import` with heading-range selection and explicit IMPORT confirmation before inbox write.
+- Added changelog source preservation in inbox entries with repo path, changelog path, and selected range metadata.
+- Added optional post-import analysis path that reuses existing cloud safety gates (preview, warning, confirmation, and size limits).
+- Added Slice 8 tests for registration lifecycle, invalid registration rollback, heading-range import behavior, offline import, and analysis gating.
+
+### Changed
+- Updated initial config structure to include an empty `repositories` collection and aligned Slice 1 config assertions.
+
 ## [0.7.0] - 2026-08-15
 
 ### Added
