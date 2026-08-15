@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import difflib
+import hashlib
 import json
 import os
 import re
@@ -92,6 +94,11 @@ def load_operational_config() -> dict:
         config["repositories"] = []
     elif not isinstance(repositories, list):
         raise ValueError("Invalid config: repositories must be a list.")
+    import_ledger = config.get("import_ledger")
+    if import_ledger is None:
+        config["import_ledger"] = {}
+    elif not isinstance(import_ledger, dict):
+        raise ValueError("Invalid config: import_ledger must be an object.")
     return config
 
 
@@ -165,6 +172,122 @@ def format_changelog_import_entry(*, repo_path: str, changelog_path: str, range_
         "### Imported Source\n\n"
         f"{source_text}\n"
     )
+
+
+def compute_content_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def make_import_ledger_key(repo_path: str, changelog_path: str, range_label: str) -> str:
+    return f"{Path(repo_path).resolve()}|{Path(changelog_path).resolve()}|{range_label.strip()}"
+
+
+def parse_range_label(range_label: str) -> tuple[str, str | None]:
+    if "->" in range_label:
+        left, right = range_label.split("->", 1)
+        return left.strip(), right.strip()
+    return range_label.strip(), None
+
+
+def parse_latest_import_source_from_inbox(
+    inbox_path: Path,
+    *,
+    repo_path: str,
+    changelog_path: str,
+    range_label: str,
+) -> str | None:
+    if not inbox_path.exists():
+        return None
+    text = inbox_path.read_text(encoding="utf-8")
+    blocks = text.split("## Changelog Import ")
+    latest: str | None = None
+    for block in blocks[1:]:
+        if "### Imported Source\n\n" not in block:
+            continue
+        head, source = block.split("### Imported Source\n\n", 1)
+        if f"- repo_path: {repo_path}" not in head:
+            continue
+        if f"- changelog_path: {changelog_path}" not in head:
+            continue
+        if f"- selected_range: {range_label}" not in head:
+            continue
+        source_body = source.split("\n## ", 1)[0].rstrip("\n")
+        latest = source_body
+    return latest
+
+
+def unified_diff_text(old_text: str, new_text: str) -> str:
+    old_lines = old_text.splitlines(keepends=True)
+    new_lines = new_text.splitlines(keepends=True)
+    diff = difflib.unified_diff(
+        old_lines,
+        new_lines,
+        fromfile="previous",
+        tofile="current",
+        lineterm="",
+    )
+    return "\n".join(diff).strip()
+
+
+def find_affected_achievements_by_source(achievements: dict, source_fragments: list[str]) -> list[str]:
+    affected: list[str] = []
+    for achievement_id, achievement in achievements.items():
+        refs = [str(x) for x in achievement.get("source_references", [])]
+        source_lines = [str(x) for x in achievement.get("source_lines", [])]
+        haystacks = refs + source_lines + [str(achievement.get("content", ""))]
+        joined = "\n".join(haystacks)
+        if any(fragment and fragment in joined for fragment in source_fragments):
+            affected.append(achievement_id)
+    return sorted(set(affected))
+
+
+def rebuild_import_ledger_from_markdown(config: dict, vault_path: Path) -> dict:
+    rebuilt: dict[str, dict] = {}
+    inbox = inbox_file_for_today(vault_path)
+    for entry in config.get("repositories", []):
+        repo_path = str(Path(entry["repo_path"]).resolve())
+        changelog_path = str(Path(entry["changelog_path"]).resolve())
+        raw = Path(changelog_path).read_text(encoding="utf-8")
+
+        if inbox.exists():
+            inbox_text = inbox.read_text(encoding="utf-8")
+            for block in inbox_text.split("## Changelog Import ")[1:]:
+                if "### Imported Source\n\n" not in block:
+                    continue
+                header, source_part = block.split("### Imported Source\n\n", 1)
+                if f"- repo_path: {repo_path}" not in header:
+                    continue
+                if f"- changelog_path: {changelog_path}" not in header:
+                    continue
+                range_prefix = "- selected_range: "
+                selected_range = None
+                for line in header.splitlines():
+                    if line.startswith(range_prefix):
+                        selected_range = line[len(range_prefix) :].strip()
+                        break
+                if not selected_range:
+                    continue
+                source_text = source_part.split("\n## ", 1)[0].rstrip("\n")
+                key = make_import_ledger_key(repo_path, changelog_path, selected_range)
+                rebuilt[key] = {
+                    "content_hash": compute_content_hash(source_text),
+                    "last_imported_at_utc": datetime.now(timezone.utc).isoformat(),
+                    "range_label": selected_range,
+                }
+
+        for key, value in list(rebuilt.items()):
+            if not key.startswith(f"{repo_path}|{changelog_path}|"):
+                continue
+            range_label = value["range_label"]
+            from_heading, to_heading = parse_range_label(range_label)
+            try:
+                selected = extract_changelog_heading_range(raw, from_heading, to_heading)
+            except ValueError:
+                continue
+            value["content_hash"] = compute_content_hash(selected)
+            value["last_rebuilt_at_utc"] = datetime.now(timezone.utc).isoformat()
+
+    return rebuilt
 
 
 def review_state_file_path() -> Path:
@@ -1041,6 +1164,46 @@ def cmd_changelog_import(args: argparse.Namespace) -> int:
     raw = changelog_path.read_text(encoding="utf-8")
     selected = extract_changelog_heading_range(raw, args.from_heading, args.to_heading)
     range_label = args.from_heading if not args.to_heading else f"{args.from_heading} -> {args.to_heading}"
+    ledger_key = make_import_ledger_key(entry["repo_path"], str(changelog_path), range_label)
+    ledger = config.setdefault("import_ledger", {})
+    current_hash = compute_content_hash(selected)
+
+    previous = ledger.get(ledger_key)
+    previous_hash = None
+    previous_source = None
+    if isinstance(previous, dict):
+        previous_hash = previous.get("content_hash")
+        previous_source = parse_latest_import_source_from_inbox(
+            inbox_file_for_today(vault_path),
+            repo_path=entry["repo_path"],
+            changelog_path=str(changelog_path),
+            range_label=range_label,
+        )
+
+    if previous_hash == current_hash:
+        print("Unchanged section detected. Import skipped (no duplicate inbox entry).")
+        print("Analysis skipped because selected content hash is unchanged.")
+        return 0
+
+    if previous_hash and previous_hash != current_hash:
+        print("Changed source detected for previously imported section.")
+        if previous_source is not None:
+            diff = unified_diff_text(previous_source, selected)
+            print("-----BEGIN SOURCE DIFF-----")
+            print(diff or "(no textual diff)")
+            print("-----END SOURCE DIFF-----")
+        achievements, warnings = scan_achievements(vault_path)
+        for warning in warnings:
+            print(warning)
+        affected = find_affected_achievements_by_source(
+            achievements,
+            [entry["repo_path"], str(changelog_path), range_label],
+        )
+        print(json.dumps({"affected_achievement_ids": affected}, ensure_ascii=True, indent=2))
+        update_answer = input("Type UPDATE to import changed source content: ").strip()
+        if update_answer != "UPDATE":
+            print("Changed-source update cancelled. Existing retained content remains unchanged.")
+            return 0
 
     print("Changelog selection preview (exact imported text):")
     print("-----BEGIN IMPORTED CONTENT-----")
@@ -1059,6 +1222,12 @@ def cmd_changelog_import(args: argparse.Namespace) -> int:
         source_text=selected,
     )
     append_inbox_entry(inbox, import_entry)
+    ledger[ledger_key] = {
+        "content_hash": current_hash,
+        "last_imported_at_utc": datetime.now(timezone.utc).isoformat(),
+        "range_label": range_label,
+    }
+    save_operational_config(config)
     print(f"Imported changelog selection to: {inbox}")
 
     if args.analyze:
@@ -1088,6 +1257,25 @@ def cmd_changelog_import(args: argparse.Namespace) -> int:
                 print("Analysis cancelled. Imported source remains in Inbox.")
         except (ValueError, OSError) as e:
             print(f"Analysis skipped after import: {e}")
+    return 0
+
+
+def cmd_import_ledger_rebuild(args: argparse.Namespace) -> int:
+    config = load_operational_config()
+    vault_path = resolve_vault_path(args.vault)
+    rebuilt = rebuild_import_ledger_from_markdown(config, vault_path)
+    config["import_ledger"] = rebuilt
+    save_operational_config(config)
+    print(
+        json.dumps(
+            {
+                "rebuilt_entries": len(rebuilt),
+                "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+            },
+            ensure_ascii=True,
+            indent=2,
+        )
+    )
     return 0
 
 
@@ -1547,6 +1735,12 @@ def build_parser() -> argparse.ArgumentParser:
     changelog_import_parser.add_argument("--max-bytes", type=int, default=12000, help="Max outbound bytes")
     changelog_import_parser.add_argument("--model", default="gpt-4o-mini", help="OpenAI model name")
     changelog_import_parser.set_defaults(handler=cmd_changelog_import)
+
+    ledger_rebuild_parser = subparsers.add_parser(
+        "import-ledger-rebuild", help="Rebuild changelog import ledger from retained markdown sources"
+    )
+    ledger_rebuild_parser.add_argument("--vault", help="Optional vault path override")
+    ledger_rebuild_parser.set_defaults(handler=cmd_import_ledger_rebuild)
 
     capture_text_parser = subparsers.add_parser("capture-text", help="Capture free-form work notes")
     capture_text_parser.add_argument("--text", required=True, help="Text to capture as raw activity")

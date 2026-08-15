@@ -1,3 +1,12 @@
+## [0.9.0] - 2026-08-15
+
+### Added
+- Added deterministic SHA-256 content hashing and an import ledger for changelog section tracking.
+- Added incremental `changelog-import` behavior to skip unchanged sections and avoid duplicate inbox imports and duplicate analysis requests.
+- Added changed-source review with unified diff output and affected achievement identification before update confirmation.
+- Added `import-ledger-rebuild` to reconstruct ledger entries from registered sources and retained markdown content.
+- Added Slice 9 tests for unchanged re-import skipping, changed-section confirmation, rebuild safety, and ledger-write failure protection.
+
 ## [0.8.0] - 2026-08-15
 
 ### Added
