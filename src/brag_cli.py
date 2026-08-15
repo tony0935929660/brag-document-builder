@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import tempfile
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib import error as urlerror
@@ -103,6 +105,107 @@ def load_review_state() -> dict:
 
 def save_review_state(state: dict) -> None:
     write_config_atomic(review_state_file_path(), state)
+
+
+def find_candidate_state(state: dict, candidate_id: str) -> dict:
+    candidate = state.get("candidates", {}).get(candidate_id)
+    if not isinstance(candidate, dict):
+        raise ValueError(f"Candidate not found: {candidate_id}")
+    return candidate
+
+
+def confirm_stage(prompt: str) -> bool:
+    return input(f"{prompt} Type YES to confirm: ").strip() == "YES"
+
+
+def markdown_string(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def safe_file_stem(value: str) -> str:
+    stem = re.sub(r"[^A-Za-z0-9_-]+", "-", value.strip()).strip("-").lower()
+    return stem or "achievement"
+
+
+def validate_achievement_id(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+        raise ValueError("achievement-id may contain only letters, numbers, underscores, and hyphens.")
+    return value
+
+
+def validate_authoritative_achievement(content: str) -> None:
+    required_parts = [
+        "id:",
+        "state:",
+        "date:",
+        "source_references:",
+        "## Confirmed Facts",
+        "### Context",
+        "### Contribution",
+        "### Outcome",
+        "### Evidence",
+        "## Source Material",
+        "## Generated Wording",
+    ]
+    if not content.startswith("---\n") or "\n---\n" not in content[4:]:
+        raise ValueError("Malformed authoritative achievement Markdown: invalid frontmatter.")
+    missing = [part for part in required_parts if part not in content]
+    if missing:
+        raise ValueError(
+            "Malformed authoritative achievement Markdown: missing " + ", ".join(missing)
+        )
+
+
+def render_achievement_markdown(
+    *,
+    achievement_id: str,
+    candidate: dict,
+    wording: str,
+    language: str,
+    model: str,
+) -> str:
+    answers = candidate["confirmed_answers"]
+    generated_at = datetime.now(timezone.utc).isoformat()
+    achievement_date = datetime.now(timezone.utc).date().isoformat()
+    source_reference = candidate["candidate_id"]
+    project = candidate.get("project_or_topic", "")
+    return (
+        "---\n"
+        f"id: {markdown_string(achievement_id)}\n"
+        "state: confirmed\n"
+        f"date: {markdown_string(achievement_date)}\n"
+        f"project: {markdown_string(project)}\n"
+        "source_references:\n"
+        f"  - {markdown_string(source_reference)}\n"
+        "ai_provider: openai\n"
+        f"ai_model: {markdown_string(model)}\n"
+        f"generated_at_utc: {markdown_string(generated_at)}\n"
+        f"generated_language: {markdown_string(language)}\n"
+        "---\n\n"
+        "## Confirmed Facts\n\n"
+        f"### Context\n\n{answers.get('context', '')}\n\n"
+        f"### Contribution\n\n{answers.get('contribution', '')}\n\n"
+        f"### Outcome\n\n{answers.get('outcome', '')}\n\n"
+        f"### Evidence\n\n{answers.get('evidence', '')}\n\n"
+        "## Source Material\n\n"
+        f"- {source_reference}\n\n"
+        "## Generated Wording\n\n"
+        f"{wording}\n"
+    )
+
+
+def render_rejection_markdown(candidate: dict, reason: str) -> str:
+    rejected_at = datetime.now(timezone.utc).isoformat()
+    return (
+        "---\n"
+        f"candidate_id: {markdown_string(candidate['candidate_id'])}\n"
+        f"rejected_at_utc: {markdown_string(rejected_at)}\n"
+        "---\n\n"
+        "## Source Reference\n\n"
+        f"{candidate['candidate_id']}\n\n"
+        "## Rejection Reason\n\n"
+        f"{reason}\n"
+    )
 
 
 def resolve_vault_path(override_path: str | None) -> Path:
@@ -561,6 +664,69 @@ def cmd_review_candidate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_confirm_candidate(args: argparse.Namespace) -> int:
+    vault_path = resolve_vault_path(args.vault)
+    state = load_review_state()
+    candidate = find_candidate_state(state, args.candidate_id)
+    if candidate.get("status") != "ready-for-confirmation":
+        raise ValueError("Candidate must be ready-for-confirmation before confirmation.")
+
+    print(json.dumps(candidate, ensure_ascii=False, indent=2))
+    if not confirm_stage("Confirm grouping and project/topic."):
+        print("Confirmation cancelled at grouping stage.")
+        return 0
+
+    if not confirm_stage("Confirm this candidate is worth retaining."):
+        reason = input("Rejection reason: ").strip()
+        if not reason:
+            raise ValueError("A rejection reason is required.")
+        rejection_id = uuid.uuid5(uuid.NAMESPACE_URL, candidate["candidate_id"])
+        rejection_name = f"{safe_file_stem(candidate.get('project_or_topic', 'candidate'))}--{rejection_id}.md"
+        rejection_path = vault_path / "Brag" / "Archive" / "Rejected" / rejection_name
+        write_text_atomic(rejection_path, render_rejection_markdown(candidate, reason))
+        candidate["status"] = "rejected"
+        candidate["rejection_path"] = str(rejection_path)
+        save_review_state(state)
+        print(f"Rejected candidate recorded at: {rejection_path}")
+        return 0
+
+    answers = candidate.get("confirmed_answers", {})
+    for key in READY_KEYS:
+        print(f"{key}: {answers.get(key, '')}")
+        if not confirm_stage(f"Confirm fact '{key}'."):
+            print(f"Confirmation cancelled at fact stage: {key}.")
+            return 0
+
+    wording = args.wording or f"{answers.get('contribution', '')}; {answers.get('outcome', '')}"
+    print(f"Generated wording: {wording}")
+    if not confirm_stage("Confirm generated wording."):
+        print("Confirmation cancelled at wording stage.")
+        return 0
+
+    achievement_id = validate_achievement_id(args.achievement_id or str(uuid.uuid4()))
+    file_name = f"{safe_file_stem(candidate.get('project_or_topic', 'achievement'))}--{achievement_id}.md"
+    achievement_path = vault_path / "Brag" / "Achievements" / file_name
+    content = render_achievement_markdown(
+        achievement_id=achievement_id,
+        candidate=candidate,
+        wording=wording,
+        language=args.language,
+        model=args.model,
+    )
+    validate_authoritative_achievement(content)
+    if achievement_path.exists():
+        validate_authoritative_achievement(achievement_path.read_text(encoding="utf-8"))
+        raise ValueError(f"Achievement already exists and will not be overwritten: {achievement_path}")
+
+    write_text_atomic(achievement_path, content)
+    candidate["status"] = "confirmed"
+    candidate["achievement_id"] = achievement_id
+    candidate["achievement_path"] = str(achievement_path)
+    save_review_state(state)
+    print(f"Confirmed achievement created at: {achievement_path}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="brag-cli")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -611,6 +777,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optionally ask AI for follow-up suggestions after manual answers",
     )
     review_parser.set_defaults(handler=cmd_review_candidate)
+
+    confirm_parser = subparsers.add_parser(
+        "confirm-candidate", help="Confirm or reject a reviewed candidate"
+    )
+    confirm_parser.add_argument("--candidate-id", required=True, help="Candidate ID from review state")
+    confirm_parser.add_argument("--vault", help="Optional vault path override")
+    confirm_parser.add_argument("--achievement-id", help="Optional immutable ID for deterministic retry")
+    confirm_parser.add_argument("--wording", help="Generated wording proposed for confirmation")
+    confirm_parser.add_argument(
+        "--language", choices=["zh-TW", "en"], default="zh-TW", help="Generated wording language"
+    )
+    confirm_parser.add_argument("--model", default="gpt-4o-mini", help="Generation model metadata")
+    confirm_parser.set_defaults(handler=cmd_confirm_candidate)
 
     return parser
 

@@ -1,3 +1,11 @@
+## [0.5.0] - 2026-08-15
+
+### Added
+- Added a new `confirm-candidate` command with staged confirmation for grouping, retention, facts, and generated wording.
+- Added authoritative achievement Markdown generation with immutable ID, required source references, and generation metadata.
+- Added rejection record creation with source reference and explicit rejection reason.
+- Added Slice 5 tests covering staged cancellation, rejection flow, malformed-target protection, retry safety after write failures, and achievement-id validation.
+
 ## [0.4.0] - 2026-08-12
 
 ### Added
